@@ -2,7 +2,7 @@
 
 ## Overview
 
-Members upload receipt photos to a designated Slack channel. The bot extracts
+Members DM receipt photos directly to the bot. The bot extracts
 structured data via Claude Vision, validates it with Pydantic, deduplicates via
 SHA-256 hashing, presents an editable confirmation modal, then writes the
 submission to Supabase (Postgres) and notifies the finance team in a Slack channel.
@@ -17,7 +17,7 @@ connection strings.
 | Service | Credential(s) | Where to obtain | Manual? |
 |---|---|---|---|
 | **Anthropic** (Claude Vision) | `ANTHROPIC_API_KEY` (`sk-ant-…`) | console.anthropic.com → API Keys | Yes — set a spend limit; billed per receipt parsed |
-| **Slack** | `SLACK_BOT_TOKEN` (`xoxb-…`), `SLACK_SIGNING_SECRET` | api.slack.com/apps → *OAuth & Permissions* (token) and *Basic Information* (signing secret) | Yes — bot token issued when the app is installed with the scopes below |
+| **Slack** | `SLACK_BOT_TOKEN` (`xoxb-…`), `SLACK_APP_TOKEN` (`xapp-…`), `SLACK_SIGNING_SECRET` | api.slack.com/apps → *OAuth & Permissions* (bot token), *Basic Information → App-Level Tokens* (app token, scope `connections:write`), *Basic Information* (signing secret) | Yes — bot token issued when the app is installed with the scopes below; app token enables Socket Mode (no public URL needed) |
 | **Supabase** | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | supabase.com → project → *Settings → API* | Yes — service-role key for server-side writes |
 
 The Supabase migration removes the previous Google credentials
@@ -29,7 +29,7 @@ service-account / sheet-sharing setup.
 ## Tech Stack
 
 - **Python 3.11+**
-- **Slack Bolt** (`slack-bolt`) — event handling, modals, message composition
+- **Slack Bolt** (`slack-bolt`) — event handling, modals, message composition; runs in **Socket Mode** (`SocketModeHandler`), so no public Request URL is required
 - **Anthropic Python SDK** — Claude Vision for receipt parsing (model: `claude-sonnet-5`)
 - **Supabase** (`supabase-py`) — Postgres storage for confirmed submissions,
   pending-submission state, and duplicate detection (native `UNIQUE` constraint)
@@ -50,13 +50,13 @@ service-account / sheet-sharing setup.
 ## Flow Diagram
 
 ```
-Member uploads receipt image to #reimbursements
+Member DMs receipt image to the bot (message.im, channel_type "im")
                     │
                     ▼
          ┌────────────────────┐
          │   Slack Bolt App   │
-         │   ack() < 3 sec    │──── immediately return 200 to Slack
-         │   (lazy listener)  │      process everything async
+         │   ack() < 3 sec    │──── ack over the Socket Mode WebSocket
+         │   (lazy listener)  │      then process everything async
          └─────────┬──────────┘
                    │
                    ▼
@@ -152,7 +152,7 @@ Member uploads receipt image to #reimbursements
                    │
                    ▼
          ┌────────────────────┐
-         │  Confirm to User   │──── ephemeral message in original channel
+         │  Confirm to User   │──── DM reply in the same conversation
          │                    │     "Receipt filed — submission <id>"
          └────────────────────┘
 ```
@@ -294,17 +294,27 @@ Rules:
 ### Required OAuth Scopes
 - `files:read` — download uploaded receipt images
 - `chat:write` — send confirmation and finance notifications
-- `im:history` — receive DM events (if supporting DM uploads)
-- `channels:history` — receive channel message events
+- `im:history` — receive receipt uploads sent to the bot via DM
+- `im:write` — open/reply in the DM with the user
 - `users:read` — pull employee name and department
 - `users:read.email` — pull employee email for the record
 
 ### Event Subscriptions
-- `file_shared` — triggers the receipt processing pipeline
+- `message.im` — triggers the receipt processing pipeline. A DM to the bot is
+  delivered as a `message` event with `channel_type: "im"` (subscribe to
+  `message.im`; in Bolt, handle `message` and filter on `channel_type == "im"`
+  with an attached file).
 
-### Interactivity
-- Enable interactivity for modal submissions
-- Request URL points to your server's `/slack/events` endpoint
+### App Home
+- Enable the **Messages Tab** (App Home → Show Tabs) and allow users to send
+  messages from it — otherwise members cannot DM the bot at all.
+
+### Socket Mode & Interactivity
+- Enable **Socket Mode** (Settings → Socket Mode). With Socket Mode on, events
+  and interactivity arrive over an outbound WebSocket, so **no public Request URL
+  is required** for either.
+- Enable interactivity for modal submissions (no Request URL needed under Socket Mode).
+- Requires an app-level token (`SLACK_APP_TOKEN`, scope `connections:write`).
 
 ---
 
@@ -314,10 +324,10 @@ Rules:
 datastory-bot/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py              # Slack Bolt app initialization, event/action routing
+│   ├── main.py              # Slack Bolt app init (Socket Mode), event/action routing
 │   ├── listeners/
 │   │   ├── __init__.py
-│   │   ├── file_upload.py   # file_shared event → download, hash, extract, open modal
+│   │   ├── file_upload.py   # DM message w/ file → download, hash, extract, open modal
 │   │   └── modal_submit.py  # modal submission → validate, enrich, log, notify
 │   └── views/
 │       ├── __init__.py
@@ -354,10 +364,11 @@ datastory-bot/
 
 ```bash
 SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...             # app-level token for Socket Mode (scope: connections:write)
 SLACK_SIGNING_SECRET=...
 SLACK_FINANCE_CHANNEL_ID=C...       # #finance-reimbursements channel ID
 ANTHROPIC_API_KEY=sk-ant-...
-SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_URL=https://<project-ref>.supabase.co    # base project URL only — no /rest/v1/ suffix
 SUPABASE_SERVICE_ROLE_KEY=...       # service-role key for server-side writes
 ```
 
@@ -384,7 +395,7 @@ SUPABASE_SERVICE_ROLE_KEY=...       # service-role key for server-side writes
 1. `utils/config.py` + `.env.example` — env var loading
 2. `models/schemas.py` — Pydantic models
 3. `migrations/001_reimbursements.sql` — apply the `reimbursements` table to Supabase
-4. `app/main.py` — bare Slack Bolt server that acks `file_shared` events
+4. `app/main.py` — bare Slack Bolt Socket Mode app that receives DM (`message.im`) events
 5. `services/slack_helpers.py` — image download + profile lookup
 6. `utils/image.py` — filetype check, conversion, hashing, base64 encoding
 7. `services/supabase_store.py` — insert pending, dedup check, confirm update, per-user query

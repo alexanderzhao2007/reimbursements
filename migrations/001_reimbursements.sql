@@ -13,7 +13,6 @@ create table reimbursements (
     file_id         text,
     employee_name   text,
     email           text,
-    department      text,
     vendor          text,
     date            date,
     total           numeric(12, 2),

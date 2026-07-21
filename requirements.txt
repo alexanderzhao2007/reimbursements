@@ -1,3 +1,7 @@
 slack-bolt
 pydantic>=2
 python-dotenv
+requests
+Pillow
+supabase
+anthropic

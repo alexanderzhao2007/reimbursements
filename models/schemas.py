@@ -43,6 +43,5 @@ class Submission(BaseModel):
     extraction: ReceiptExtraction
     employee_name: Optional[str] = None
     employee_email: Optional[str] = None
-    department: Optional[str] = None
     status: str = "pending"     # pending | confirmed | error
     created_at: str             # ISO 8601 timestamp

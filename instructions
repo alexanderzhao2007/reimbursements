@@ -1,0 +1,33 @@
+This is a Slack reimbursement bot. Read ARCHITECTURE.md first — it is the source
+of truth for the design, data models, Supabase schema, Slack config, project
+structure, and implementation order. Follow it.
+
+Key context / decisions already made:
+- Intake is via DM to the bot (message.im, delivered as a `message` event with
+  channel_type == "im" and an attached file) — NOT a shared channel.
+- Slack Bolt runs in Socket Mode (SocketModeHandler) — no public Request URL.
+- Storage is Supabase (Postgres) via supabase-py; dedup is a UNIQUE(image_hash)
+  constraint; pending state is a row with status='pending'.
+- Receipt parsing is Claude Vision, model claude-sonnet-5, with Pydantic v2
+  validation of the JSON response.
+- Finance notifications go to SLACK_FINANCE_CHANNEL_ID.
+
+Environment: a .env file already exists (gitignored) with all required vars:
+SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SIGNING_SECRET, SLACK_FINANCE_CHANNEL_ID,
+ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY. Do not print or commit
+secret values. Load them via utils/config.py.
+
+Build in the order given in ARCHITECTURE.md's "Implementation Order" section.
+Start with steps 1–4 and STOP after step 4:
+  1. utils/config.py + .env.example
+  2. models/schemas.py (Pydantic models)
+  3. migrations/001_reimbursements.sql
+  4. app/main.py — a minimal Bolt Socket Mode app that receives DM (message.im)
+     events and logs whether a file is attached, so I can confirm it connects and
+     receives my DMs before we build the rest.
+
+Also create requirements.txt as you introduce dependencies. Write the code to
+match ARCHITECTURE.md exactly; if you find a discrepancy or a better approach,
+tell me before diverging. After step 4, give me the exact command to run the app
+and how to test it (DM the bot a photo), then wait for me to confirm it works
+before continuing to step 5.

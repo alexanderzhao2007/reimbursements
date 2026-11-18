@@ -29,13 +29,14 @@ def _dm(client, channel, text):
     client.chat_postMessage(channel=channel, text=text)
 
 
-def _post_review(client, channel, submission_id, extraction, manual):
-    if manual:
+def _post_review(client, channel, submission_id, extraction, manual, summary=None):
+    """Post the review message. `summary` overrides the default intro line."""
+    if summary is None and manual:
         summary = (
             ":warning: I couldn't read this receipt automatically. "
             "Tap below to enter the details manually."
         )
-    else:
+    elif summary is None:
         vendor = extraction.vendor or "your receipt"
         if extraction.total is not None:
             amount = f"{extraction.currency or 'USD'} {extraction.total:.2f}"
@@ -61,7 +62,62 @@ def _post_review(client, channel, submission_id, extraction, manual):
     client.chat_postMessage(channel=channel, blocks=blocks, text="Review your reimbursement")
 
 
+def _handle_existing(client, channel, user_id, existing):
+    """Respond to an upload whose image_hash is already on file.
+
+    - Confirmed → it's genuinely a duplicate submission.
+    - Unfinished (pending/error) and uploaded by this member → re-offer the same
+      submission's Review & Submit button, pre-filled from the stored row (no
+      second Vision call, no orphaned rows). Retrying an 'error' row is allowed.
+    - Unfinished but uploaded by someone else → don't hand them another member's
+      submission; just say it's already been uploaded.
+    """
+    if not existing:  # row vanished between the conflict and the re-read
+        _dm(client, channel, "This receipt was already submitted.")
+        return
+
+    submission_id = existing.get("submission_id")
+    status = existing.get("status")
+
+    if status not in supabase_store.CONFIRMABLE_STATUSES:
+        _dm(client, channel,
+            f"This receipt was already submitted (submission `{submission_id}`).")
+        return
+
+    if existing.get("user_id") != user_id:
+        _dm(client, channel,
+            "This receipt has already been uploaded by another member, so I can't "
+            "file it again. Reach out to finance if that looks wrong.")
+        return
+
+    if status == "error":
+        summary = (":repeat: Your earlier attempt to file this receipt didn't go "
+                   "through. Tap below to try again:")
+    else:
+        summary = (":receipt: You've already uploaded this receipt but haven't "
+                   "submitted it yet. Pick up where you left off:")
+    _post_review(client, channel, submission_id,
+                 supabase_store.extraction_from_row(existing), manual=False,
+                 summary=summary)
+
+
 def _process(client, channel, user_id, file_obj):
+    """Thread entry point. Nothing may escape a background thread silently — an
+    unhandled error would leave the member staring at 'reading your receipt…'
+    forever — so anything unexpected is logged and reported to them."""
+    try:
+        _run_pipeline(client, channel, user_id, file_obj)
+    except Exception:
+        logger.exception("receipt intake failed for file %s", file_obj.get("id"))
+        try:
+            _dm(client, channel,
+                "Something went wrong processing your receipt — please try "
+                "uploading it again.")
+        except Exception:
+            logger.exception("could not notify %s of intake failure", user_id)
+
+
+def _run_pipeline(client, channel, user_id, file_obj):
     _dm(client, channel, ":inbox_tray: Got it — reading your receipt…")
 
     try:
@@ -83,10 +139,15 @@ def _process(client, channel, user_id, file_obj):
     # pipeline order in ARCHITECTURE.md.
     image_hash = image_utils.sha256_hash(img_bytes)
 
-    existing = supabase_store.check_duplicate(image_hash)
-    if existing:
+    try:
+        existing = supabase_store.find_by_hash(image_hash)
+    except Exception:
+        logger.exception("dedup check failed")
         _dm(client, channel,
-            f"This receipt was already submitted (submission `{existing}`).")
+            "Couldn't save your receipt right now — please try again shortly.")
+        return
+    if existing:
+        _handle_existing(client, channel, user_id, existing)
         return
 
     manual = False
@@ -94,6 +155,12 @@ def _process(client, channel, user_id, file_obj):
         extraction = vision.extract_receipt(img_bytes, media_type)
     except VisionParseError:
         extraction = ReceiptExtraction()  # blank → manual entry in the modal
+        manual = True
+    except Exception:
+        # Anything else from the SDK/parsing (e.g. a validation error on the
+        # structured output). Losing the auto-parse shouldn't block filing.
+        logger.exception("unexpected error from Claude Vision")
+        extraction = ReceiptExtraction()
         manual = True
 
     submission_id = str(uuid4())
@@ -106,8 +173,8 @@ def _process(client, channel, user_id, file_obj):
             extraction=extraction,
         )
     except DuplicateSubmission as d:
-        _dm(client, channel,
-            f"This receipt was already submitted (submission `{d.submission_id}`).")
+        # Lost a race with a concurrent upload of the same image.
+        _handle_existing(client, channel, user_id, d.existing)
         return
     except Exception:
         logger.exception("insert_pending failed")

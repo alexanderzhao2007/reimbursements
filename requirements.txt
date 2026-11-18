@@ -6,3 +6,7 @@ Pillow
 pillow-heif
 supabase
 anthropic
+
+# Testing — pinned to >=8 because an unpinned install can resolve to pytest 3.x,
+# which does not run on modern Python.
+pytest>=8

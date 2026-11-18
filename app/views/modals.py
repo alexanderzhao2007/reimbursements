@@ -1,15 +1,38 @@
 """Block Kit builder for the receipt confirmation modal.
 
 `build_modal` renders a single-step editable modal pre-filled from a
-ReceiptExtraction; `submission_id` rides along in `private_metadata` so the
-submit handler can find the pending row. Line items are shown read-only (editing
+ReceiptExtraction. `private_metadata` carries JSON with the `submission_id` (so
+the submit handler can find the pending row) and the review message's
+channel/ts (so it can replace the Review & Submit button once filed). Line items are shown read-only (editing
 a variable-length list in a modal is clunky); they carry through unchanged on
 confirm.
 """
 
+import json
+from typing import Optional
+
 from models.schemas import ReceiptExtraction
 
 CALLBACK_ID = "reimbursement_modal"
+
+
+def encode_metadata(submission_id: str, channel: Optional[str] = None,
+                    ts: Optional[str] = None) -> str:
+    """Pack the submission ID plus the review message's location (so the submit
+    handler can replace its button) into the modal's private_metadata."""
+    return json.dumps({"submission_id": submission_id, "channel": channel, "ts": ts})
+
+
+def decode_metadata(raw: str) -> tuple[str, Optional[str], Optional[str]]:
+    """Inverse of encode_metadata → (submission_id, channel, ts). A bare
+    submission_id string (modals opened before this format existed) is accepted."""
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw, None, None
+    if not isinstance(data, dict):
+        return raw, None, None
+    return data.get("submission_id"), data.get("channel"), data.get("ts")
 CATEGORIES = ["meals", "travel", "supplies", "software", "equipment", "lodging", "other"]
 
 
@@ -32,7 +55,8 @@ def _category_option(value):
     return {"text": {"type": "plain_text", "text": value.capitalize()}, "value": value}
 
 
-def build_modal(submission_id: str, extraction: ReceiptExtraction) -> dict:
+def build_modal(submission_id: str, extraction: ReceiptExtraction,
+                channel: Optional[str] = None, ts: Optional[str] = None) -> dict:
     # Date picker
     date_element = {"type": "datepicker", "action_id": "date"}
     if extraction.date:
@@ -92,7 +116,7 @@ def build_modal(submission_id: str, extraction: ReceiptExtraction) -> dict:
     return {
         "type": "modal",
         "callback_id": CALLBACK_ID,
-        "private_metadata": submission_id,
+        "private_metadata": encode_metadata(submission_id, channel, ts),
         "title": {"type": "plain_text", "text": "Reimbursement"},
         "submit": {"type": "plain_text", "text": "Submit Reimbursement"},
         "close": {"type": "plain_text", "text": "Cancel"},

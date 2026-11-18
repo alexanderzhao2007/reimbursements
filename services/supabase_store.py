@@ -1,6 +1,6 @@
 """Supabase (Postgres) data access for the reimbursements table.
 
-Covers the four operations the pipeline needs: insert a pending row, dedup check,
+Covers the operations the pipeline needs: insert a pending row, dedup lookup,
 confirm (update to status='confirmed'), and per-user listing. Duplicate detection
 is enforced by the UNIQUE(image_hash) constraint — a conflicting insert raises
 DuplicateSubmission carrying the existing submission_id.
@@ -24,16 +24,22 @@ logger = logging.getLogger(__name__)
 _TABLE = "reimbursements"
 _UNIQUE_VIOLATION = "23505"  # Postgres error code for unique_violation
 
+# Statuses a submission may be confirmed from. 'error' is included so a member can
+# retry via the same Review & Submit button after a transient failure.
+CONFIRMABLE_STATUSES = ("pending", "error")
+
 _client: Optional[Client] = None
 
 
 class DuplicateSubmission(Exception):
     """Raised when an insert conflicts with an existing image_hash. Carries the
-    submission_id of the row already on file (may be None if it can't be re-read)."""
+    row already on file (`existing`, may be None if it can't be re-read) so the
+    caller can decide by its status/owner how to respond."""
 
-    def __init__(self, submission_id: Optional[str]):
-        super().__init__(f"duplicate receipt; existing submission {submission_id}")
-        self.submission_id = submission_id
+    def __init__(self, existing: Optional[dict]):
+        self.existing = existing
+        self.submission_id = existing.get("submission_id") if existing else None
+        super().__init__(f"duplicate receipt; existing submission {self.submission_id}")
 
 
 def _get_client() -> Client:
@@ -87,17 +93,19 @@ def extraction_from_row(row: dict) -> ReceiptExtraction:
     )
 
 
-def check_duplicate(image_hash: str) -> Optional[str]:
-    """Return the submission_id of an existing row with this image_hash, or None."""
+def find_by_hash(image_hash: str) -> Optional[dict]:
+    """Return the existing row with this image_hash, or None. The full row is
+    returned so the caller can branch on status/user_id and, for an unfinished
+    submission, re-offer it pre-filled without another Vision call."""
     res = (
         _get_client()
         .table(_TABLE)
-        .select("submission_id")
+        .select("*")
         .eq("image_hash", image_hash)
         .limit(1)
         .execute()
     )
-    return res.data[0]["submission_id"] if res.data else None
+    return res.data[0] if res.data else None
 
 
 def insert_pending(
@@ -125,7 +133,7 @@ def insert_pending(
         _get_client().table(_TABLE).insert(row).execute()
     except APIError as e:
         if e.code == _UNIQUE_VIOLATION:
-            raise DuplicateSubmission(check_duplicate(image_hash)) from e
+            raise DuplicateSubmission(find_by_hash(image_hash)) from e
         raise
 
 
@@ -136,8 +144,14 @@ def confirm(
     employee_name: Optional[str],
     employee_email: Optional[str],
 ) -> Optional[dict]:
-    """Update a pending row to confirmed: writes the (possibly user-edited)
-    extraction fields, member info, and submitted_at. Returns the updated row."""
+    """Update a pending (or previously errored) row to confirmed: writes the
+    (possibly user-edited) extraction fields, member info, and submitted_at.
+
+    The status guard is part of the UPDATE's WHERE clause, so the check-and-set is
+    atomic in Postgres: if two submits race (double click, two open modals), only
+    the first matches and the second gets None. Returns the updated row, or None if
+    the submission doesn't exist or is already confirmed — callers must then skip
+    any side effects (finance notification, etc.)."""
     updates = {
         "status": "confirmed",
         "employee_name": employee_name,
@@ -150,6 +164,7 @@ def confirm(
         .table(_TABLE)
         .update(updates)
         .eq("submission_id", submission_id)
+        .in_("status", list(CONFIRMABLE_STATUSES))
         .execute()
     )
     return res.data[0] if res.data else None

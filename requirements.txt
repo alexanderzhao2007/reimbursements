@@ -3,5 +3,6 @@ pydantic>=2
 python-dotenv
 requests
 Pillow
+pillow-heif
 supabase
 anthropic

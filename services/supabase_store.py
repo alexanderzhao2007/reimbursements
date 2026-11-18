@@ -60,6 +60,33 @@ def _extraction_columns(extraction: ReceiptExtraction) -> dict:
     }
 
 
+def get(submission_id: str) -> Optional[dict]:
+    """Fetch a single reimbursement row by submission_id, or None."""
+    res = (
+        _get_client()
+        .table(_TABLE)
+        .select("*")
+        .eq("submission_id", submission_id)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def extraction_from_row(row: dict) -> ReceiptExtraction:
+    """Rebuild a ReceiptExtraction from a stored row (inverse of
+    _extraction_columns), e.g. to pre-fill the confirmation modal."""
+    return ReceiptExtraction(
+        vendor=row.get("vendor"),
+        date=row.get("date"),
+        total=row.get("total"),
+        currency=row.get("currency"),
+        category=row.get("category"),
+        tax=row.get("tax"),
+        line_items=row.get("line_items"),
+    )
+
+
 def check_duplicate(image_hash: str) -> Optional[str]:
     """Return the submission_id of an existing row with this image_hash, or None."""
     res = (

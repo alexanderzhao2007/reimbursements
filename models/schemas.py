@@ -44,4 +44,6 @@ class Submission(BaseModel):
     employee_name: Optional[str] = None
     employee_email: Optional[str] = None
     status: str = "pending"     # pending | confirmed | error
+    reimbursed: bool = False    # set/toggled manually in Supabase after payout
+    reimbursed_at: Optional[str] = None  # auto-stamped by a DB trigger on flip
     created_at: str             # ISO 8601 timestamp

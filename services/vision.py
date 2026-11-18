@@ -20,11 +20,14 @@ logger = logging.getLogger(__name__)
 _MODEL = "claude-sonnet-5"
 _MAX_TOKENS = 1024  # the JSON payload is small; no streaming needed
 
-_PROMPT = """You are a receipt parser. Analyze this receipt image and extract the
-structured data defined by the response schema.
+_PROMPT = """You are a receipt parser. The image is often a phone photo of a paper
+receipt — expect perspective skew, glare, shadows, curl, and faint thermal-paper
+print rather than a clean flatbed scan. Read carefully at angles and low contrast.
+Extract the structured data defined by the response schema.
 
 Rules:
-- Return null for ANY field you cannot read clearly. Never guess.
+- Do your best to read faint or angled text, but return null for a field only when
+  it is genuinely illegible. Prefer null over a guess — never invent a value.
 - "total" is the final amount paid including tax and tip.
 - "category" should be one of: meals, travel, supplies, software, equipment, lodging, other.
 - "date" must be ISO 8601 format (YYYY-MM-DD).

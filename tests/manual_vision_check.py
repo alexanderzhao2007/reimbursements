@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.vision import extract_receipt
-from utils.image import is_supported, media_type_for, to_png
+from utils.image import prepare_for_vision
 
 
 def _synthetic_png() -> bytes:
@@ -47,21 +47,6 @@ def _synthetic_png() -> bytes:
     return buf.getvalue()
 
 
-def _media_type_from_bytes(image_bytes: bytes) -> tuple[bytes, str]:
-    """Detect the real image format from the bytes (NOT the file extension, which
-    can lie — e.g. a .jpg that is actually WebP) and return
-    (possibly-converted bytes, media_type). Unsupported formats are converted to
-    PNG, exactly as the real upload pipeline will."""
-    from PIL import Image
-
-    with Image.open(io.BytesIO(image_bytes)) as im:
-        fmt = (im.format or "").lower()  # 'jpeg', 'png', 'gif', 'webp', ...
-    if is_supported(fmt):
-        return image_bytes, media_type_for(fmt)
-    print(f"'{fmt or 'unknown'}' is not a Vision-supported type; converting to PNG.")
-    return to_png(image_bytes), media_type_for("png")
-
-
 def main() -> None:
     if len(sys.argv) > 1:
         path = Path(sys.argv[1])
@@ -71,7 +56,9 @@ def main() -> None:
         image_bytes = _synthetic_png()
         print("Parsing synthetic receipt (pass an image path to use your own) ...")
 
-    image_bytes, media_type = _media_type_from_bytes(image_bytes)
+    # Run through the exact normalization the live pipeline uses (upright,
+    # right-sized, contrast-evened, PNG) so this check mirrors production.
+    image_bytes, media_type = prepare_for_vision(image_bytes)
     result = extract_receipt(image_bytes, media_type)
 
     print("\nextract_receipt OK - validated ReceiptExtraction:")

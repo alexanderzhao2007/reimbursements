@@ -228,12 +228,15 @@ create table reimbursements (
                                 check (status in ('pending', 'confirmed', 'error')),
     created_at      timestamptz not null default now(),
     submitted_at    timestamptz,
+    reimbursed      boolean     not null default false,
+    reimbursed_at   timestamptz,
     constraint uq_reimbursements_image_hash unique (image_hash)
 );
 
 create index idx_reimbursements_user_id    on reimbursements (user_id);
 create index idx_reimbursements_created_at on reimbursements (created_at);
 create index idx_reimbursements_status     on reimbursements (status);
+create index idx_reimbursements_reimbursed on reimbursements (reimbursed);
 ```
 
 Optional cleanup of orphaned pending rows (never confirmed) can be handled by a
@@ -258,6 +261,8 @@ by filtering on `status` in queries. It is not required for correctness.
 | status | Server | `text` |
 | created_at | Server default | `timestamptz` |
 | submitted_at | Set on confirmation | `timestamptz` |
+| reimbursed | Set manually in Supabase after payout | `boolean` (default false) |
+| reimbursed_at | Auto-stamped by trigger when `reimbursed` flips | `timestamptz` |
 
 ---
 
